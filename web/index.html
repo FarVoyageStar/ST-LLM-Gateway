@@ -1,0 +1,359 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ST LLM Gateway</title>
+<!--
+  ST LLM Gateway 管理页（单文件、无构建依赖，由网关静态托管）。
+  功能分区：
+    ① 酒馆 / Codex 连接：展示对外地址，设置连接密钥（Bearer 鉴权）
+    ② 添加 / 编辑代理项目：名称 / URL / 协议 / 密钥 / 模型
+    ③ 选择模型：自动发现或手动填写后勾选对外暴露
+    ④ 统计信息：请求数 / Token / 字节数 / 并发等累计指标
+    ⑤ 实时连接状态：活跃请求的阶段与流量，每秒自动刷新
+    ⑥ 最近请求日志  ⑦ 已配置项目管理（启用 / 禁用 / 删除）
+  所有数据经 /api/* 管理接口读写；设置密钥后所有请求自动携带 Bearer 头。
+-->
+<style>
+/* ===== 设计系统 =====
+   深色护眼：背景用深灰蓝而非纯黑、文字用柔白而非纯白，降低对比疲劳与蓝光刺激；
+   主色为低饱和蓝紫→薄荷渐变；玻璃拟态卡片 + 柔和投影 + 微交互动效。 */
+:root{
+  --bg:#0e1116;--panel:rgba(22,27,36,.72);--panel2:#12171f;
+  --line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.14);
+  --ink:#dde3ec;--muted:#8d97a9;
+  --accent:#8ea2ff;--accent2:#67e8d0;--accent-soft:rgba(142,162,255,.14);
+  --ok:#52c795;--ok-soft:rgba(82,199,149,.13);
+  --err:#ef7d7d;--err-soft:rgba(239,125,125,.12);
+  --warn:#d9a94a;--warn-soft:rgba(217,169,74,.14);
+  --radius:16px;
+}
+*{box-sizing:border-box}
+html{color-scheme:dark;scroll-behavior:smooth}
+body{font-family:"Inter","PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;max-width:920px;margin:auto;padding:32px 18px 64px;color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.55;background:
+  radial-gradient(1000px 480px at 15% -180px,rgba(142,162,255,.10),transparent 60%),
+  radial-gradient(900px 500px at 90% -120px,rgba(103,232,208,.07),transparent 55%),
+  var(--bg);background-attachment:fixed}
+
+/* 吸顶头部：毛玻璃底 + 渐变 Logo + 版本徽章 */
+.top{position:sticky;top:0;z-index:10;margin:-32px -18px 22px;padding:20px 18px 15px;background:rgba(14,17,22,.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.topIn{max-width:884px;margin:auto;display:flex;align-items:center;gap:14px}
+.logo{width:38px;height:38px;flex:none;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#0c0f14;box-shadow:0 4px 18px rgba(142,162,255,.35)}
+h1{font-size:21px;margin:0;letter-spacing:.3px;background:linear-gradient(90deg,#f2f5fb,#a9baf5);-webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+.ver{margin-left:auto;flex:none;font-size:11.5px;font-weight:600;color:var(--accent2);border:1px solid rgba(103,232,208,.3);background:rgba(103,232,208,.08);padding:3px 10px;border-radius:999px}
+
+/* 卡片：玻璃拟态 + 入场上浮动画（依次延迟）+ 悬停描边 */
+.card{background:var(--panel);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin:16px 0;box-shadow:0 10px 34px rgba(0,0,0,.32);transition:border-color .2s,box-shadow .2s;animation:rise .45s ease both}
+.card:hover{border-color:var(--line2);box-shadow:0 14px 40px rgba(0,0,0,.42)}
+.card:nth-of-type(1){animation-delay:.02s}.card:nth-of-type(2){animation-delay:.06s}.card:nth-of-type(3){animation-delay:.10s}.card:nth-of-type(4){animation-delay:.14s}.card:nth-of-type(5){animation-delay:.18s}.card:nth-of-type(6){animation-delay:.22s}.card:nth-of-type(7){animation-delay:.26s}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+h2{font-size:15.5px;margin:0 0 14px;font-weight:650;display:flex;align-items:center;gap:9px}
+h2::before{content:"";width:4px;height:16px;flex:none;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent2))}
+.muted{color:var(--muted);font-size:13px;line-height:1.65}
+.url{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel2);border:1px solid var(--line2);color:#9db4ff;padding:12px 13px;border-radius:11px;word-break:break-all;margin-bottom:8px}
+
+/* 表单控件：深色底 + 悬停提亮 + 聚焦光晕 */
+label{display:block;font-size:12.5px;font-weight:600;letter-spacing:.3px;color:#a7b0c2;margin:15px 0 7px}
+input,select,textarea{width:100%;box-sizing:border-box;padding:11px 13px;border:1px solid var(--line2);border-radius:11px;background:var(--panel2);color:var(--ink);font-size:15px;font-family:inherit;transition:border-color .15s,box-shadow .15s}
+input:hover,select:hover,textarea:hover{border-color:rgba(255,255,255,.22)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input::placeholder,textarea::placeholder{color:#5d6675}
+textarea{min-height:96px;resize:vertical;line-height:1.6}
+
+/* 按钮：主按钮渐变 + 投影，次按钮描边，危险按钮柔红 */
+button{border:0;border-radius:11px;padding:10px 17px;margin:9px 9px 0 0;cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;color:var(--ink);transition:filter .15s,transform .08s,box-shadow .15s}
+button:hover{filter:brightness(1.1)}
+button:active{transform:translateY(1px) scale(.99)}
+.primary{background:linear-gradient(135deg,var(--accent),#7c6cf0);color:#0b0e14;box-shadow:0 4px 16px rgba(142,162,255,.28)}
+.primary:hover{box-shadow:0 6px 22px rgba(142,162,255,.42)}
+.secondary{background:#1b2230;border:1px solid var(--line2)}
+.danger{background:var(--err-soft);color:var(--err);border:1px solid rgba(239,125,125,.28)}
+.small{font-size:12px;padding:6px 12px;border-radius:9px}
+
+/* 列表与状态元素 */
+.liveRow{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:9px 0;background:rgba(255,255,255,.02)}
+.pill{display:inline-block;padding:3px 11px;border-radius:999px;background:#1b2230;color:#a7b0c2;font-size:12px;font-weight:600}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.err{background:var(--err-soft);color:var(--err)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.status{display:none;margin-top:13px;padding:12px 13px;border-radius:11px;font-size:13.5px}
+.status.ok{display:block;background:var(--ok-soft);color:var(--ok);border:1px solid rgba(82,199,149,.28)}
+.status.err{display:block;background:var(--err-soft);color:var(--err);border:1px solid rgba(239,125,125,.28)}
+.project{border:1px solid var(--line);border-radius:13px;padding:16px;margin-top:13px;background:rgba(255,255,255,.02);transition:border-color .15s}
+.project:hover{border-color:var(--line2)}
+.projHead{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.modelTag{display:inline-flex;align-items:center;gap:5px;background:#1a2130;border:1px solid var(--line2);border-radius:999px;padding:3px 11px;margin:5px 6px 0 0;font-size:13px;transition:border-color .15s}
+.modelTag:hover{border-color:var(--accent)}
+.modelTag a{color:var(--err);text-decoration:none;font-weight:700;opacity:.6}
+.modelTag a:hover{opacity:1}
+.sel{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:11px;padding:12px 13px;margin:9px 0;background:rgba(255,255,255,.02);cursor:pointer;transition:border-color .15s,background .15s}
+.sel:hover{border-color:var(--line2)}
+.sel:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.sel input{width:auto;margin-top:3px;accent-color:var(--accent)}
+.actions{margin-top:11px}
+
+/* 统计网格：数字渐变字 + 悬停上浮 */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:11px}
+.statBox{background:rgba(255,255,255,.025);border:1px solid var(--line);border-radius:13px;padding:15px 10px;text-align:center;transition:border-color .15s,transform .15s}
+.statBox:hover{border-color:var(--line2);transform:translateY(-2px)}
+.statBox .num{font-size:22px;font-weight:750;line-height:1.2;word-break:break-all;font-variant-numeric:tabular-nums;background:linear-gradient(90deg,#eef1f8,#aebcf0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.statBox .cap{font-size:12px;color:var(--muted);margin-top:5px}
+@media(max-width:600px){.stats{grid-template-columns:repeat(2,1fr)}.top{position:static}}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#29303d;border-radius:8px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#39414f}
+::selection{background:rgba(142,162,255,.32)}
+/* 尊重系统的“减少动态效果”偏好 */
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<header class="top"><div class="topIn"><div class="logo">ST</div><div><h1>ST LLM Gateway</h1><div class="sub">把不同厂商 / Coding Plan / Agent API 统一转换为 SillyTavern 或 Codex 可用的本地接口</div></div><span class="ver" id="verBadge"></span></div></header>
+
+<div class="card"><h2>① 酒馆 / Codex 连接</h2><div class="url" id="gatewayUrl"></div>
+<div class="muted">SillyTavern 的 Custom OpenAI、或 Codex CLI 的 OPENAI_BASE_URL 都填这里（Codex 末尾带 /v1）。</div>
+<label>连接密钥</label><input id="gatewayKey" type="password" placeholder="自定义一个密钥，留空表示不鉴权">
+<button class="primary" onclick="saveKey()">保存密钥</button></div>
+
+<div class="card" id="addCard"><h2>② 添加 / 编辑代理项目</h2>
+<label>项目名称</label><select id="psel" onchange="pickSaved()" style="margin-bottom:6px"><option value="">＋ 新建项目…</option></select><input id="pname" placeholder="这里填写项目名称">
+<label>项目 URL</label><input id="purl" placeholder="这里填写项目的连接地址">
+<label>协议</label><select id="wire"><option value="openai-chat">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select>
+<div class="muted">协议由“上游实际接口”决定，不由厂商名称决定。</div>
+<label>项目密钥</label><input id="pkey" type="password" placeholder="API Key">
+<label>模型名称（可手动填写，一行一个）</label><textarea id="manualModels" placeholder="deepseek-v3.2&#10;deepseek-v4-pro"></textarea>
+<button class="primary" onclick="discover()">尝试自动获取模型</button>
+<button class="secondary" onclick="prepareManual()">使用手动模型</button>
+<div class="status" id="status"></div></div>
+
+<div class="card" id="selectCard" style="display:none"><h2>③ 选择模型</h2><div class="muted">模型 ID 将原样发送给上游。勾选需要暴露的模型。</div>
+<div id="models" class="models"></div><button class="primary" id="saveBtn" onclick="saveProject()">保存项目和模型</button><button class="secondary" id="cancelBtn" style="display:none" onclick="resetForm()">取消编辑</button></div>
+
+<div class="card"><h2>④ 统计信息</h2>
+<div class="stats">
+<div class="statBox"><div class="num" id="statSent">0</div><div class="cap">发送请求</div></div>
+<div class="statBox"><div class="num" id="statRecv">0</div><div class="cap">接收响应</div></div>
+<div class="statBox"><div class="num" id="statReject">0</div><div class="cap">拒绝请求</div></div>
+<div class="statBox"><div class="num" id="statTimeout">0</div><div class="cap">超时请求</div></div>
+<div class="statBox"><div class="num" id="statError">0</div><div class="cap">错误</div></div>
+<div class="statBox"><div class="num" id="statTokens">0</div><div class="cap">消耗 Token（总）</div></div>
+<div class="statBox"><div class="num" id="statPrompt">0</div><div class="cap">输入 Token</div></div>
+<div class="statBox"><div class="num" id="statCompletion">0</div><div class="cap">输出 Token</div></div>
+<div class="statBox"><div class="num" id="statBytesIn">0</div><div class="cap">已收字节</div></div>
+<div class="statBox"><div class="num" id="statBytesOut">0</div><div class="cap">已发字节</div></div>
+<div class="statBox"><div class="num" id="statConnTotal">0</div><div class="cap">累计连接</div></div>
+<div class="statBox"><div class="num" id="statConnActive">0</div><div class="cap">当前连接</div></div>
+<div class="statBox"><div class="num" id="statPeak">0</div><div class="cap">峰值并发</div></div>
+<div class="statBox"><div class="num" id="statCleared" style="font-size:13px">-</div><div class="cap">上次清零时间</div></div>
+</div>
+<button class="primary" onclick="resetStats()">清零统计</button>
+<button class="secondary" onclick="clearLogs()">清空请求日志</button>
+</div>
+
+<div class="card"><h2>⑤ 实时连接状态</h2><div id="liveSummary" class="muted">读取中…</div><div id="live"></div></div>
+
+<div class="card"><h2>⑥ 最近请求 / 上游统计</h2><div class="muted">可判断是在等待上游首包、流式生成、超时还是请求被拒绝。</div><div id="history"></div></div>
+
+<div class="card"><h2>⑦ 已配置项目</h2><div class="muted">已禁用 / 失效的项目也会在此显示，可重新启用或删除。</div><div id="projects"></div></div>
+
+<script>
+// ===== 页面状态与基础设施 =====
+const $=id=>document.getElementById(id);
+// discovered 当前待勾选的模型列表；editingId 非空表示正在编辑既有项目；
+// existingModels 编辑时该项目已保存的模型（用于增量增删）
+let discovered=[],providersCache=[],modelsCache=[],editingId=null,existingModels=[];
+$('gatewayUrl').textContent=location.origin+'/v1';
+
+// 管理接口鉴权：设置连接密钥后，所有 /api 请求自动携带 Bearer 头。
+// 密钥保存在浏览器 localStorage 免重复输入；401 时给出明确提示而不是静默失败。
+let GW_KEY=localStorage.getItem('gw_key')||'';
+$('gatewayKey').value=GW_KEY;
+// 鉴权一律使用"已保存"的密钥（以点击"保存密钥"后生效的值为准），
+// 输入框里编辑到一半的内容不参与其它请求的鉴权
+function authKey(){return GW_KEY||''}
+// 注意：仅当请求确实携带 body 时才设置 content-type: application/json。
+// Fastify 对"声明了 application/json 但 body 为空"的请求一律返回 400
+// （FST_ERR_CTP_EMPTY_JSON_BODY），删除/清零这类无 body 请求会因此被拒。
+async function api(url,opt={},key){const h={...(opt.headers||{})};if(opt.body!==undefined)h["content-type"]="application/json";const k=key??authKey();if(k)h.authorization='Bearer '+k;const r=await fetch(url,{...opt,headers:h});let j={};try{j=await r.json()}catch{}if(!r.ok)throw new Error(r.status===401?'连接密钥缺失或不正确（请先在①中输入密钥并保存）':(j.message||j.error?.message||`HTTP ${r.status}`));return j}
+
+// ===== 配置与项目列表加载 =====
+// 拉取设置（密钥占位提示）、项目与模型缓存，刷新项目下拉框和已配置项目卡片
+async function load(){
+  try{const s=await api('/api/settings');$('gatewayKey').placeholder=s.api_key_configured?'已设置连接密钥（输入新密钥以更改）':'自定义一个密钥，留空表示不鉴权'}catch{}
+  const ps=await api('/api/providers'),ms=await api('/api/models');
+  providersCache=ps;modelsCache=ms;
+  renderSavedSelect(ps);
+  renderProjects(ps,ms);
+}
+function renderSavedSelect(ps){
+  const cur=$('psel').value;
+  $('psel').innerHTML='<option value="">＋ 新建项目…</option>'+ps.map(p=>`<option value="${p.id}">${esc(p.name)}${p.enabled?'':'（已禁用）'}</option>`).join('');
+  if(cur&&ps.some(p=>String(p.id)===cur))$('psel').value=cur;
+  else if(editingId&&!ps.some(p=>p.id===editingId))resetForm();
+}
+// 从下拉框选中既有项目：回填表单进入编辑模式（密钥不回显，留空表示不变）
+function pickSaved(){
+  const id=$('psel').value;
+  if(!id)return resetForm();
+  const p=providersCache.find(x=>String(x.id)===id);if(!p)return resetForm();
+  editingId=p.id;
+  $('pname').value=p.name;$('purl').value=p.base_url;$('wire').value=p.wire_api;
+  $('pkey').value='';$('pkey').placeholder='留空 = 保持原密钥不变';
+  existingModels=modelsCache.filter(m=>m.provider_id===p.id);
+  discovered=existingModels.map(m=>({id:m.upstream_model,name:m.name}));
+  $('manualModels').value=existingModels.map(m=>m.upstream_model).join('\n');
+  renderModels(discovered,true);
+  $('saveBtn').textContent='保存修改';$('cancelBtn').style.display='inline-block';
+  show(`正在编辑项目「${esc(p.name)}」：可修改 URL / 密钥 / 模型列表，密钥留空表示不变。`,'ok');
+}
+function resetForm(){
+  editingId=null;existingModels=[];discovered=[];
+  $('pname').value=$('purl').value=$('pkey').value='';$('pkey').placeholder='API Key';
+  $('manualModels').value='';$('psel').value='';
+  $('selectCard').style.display='none';
+  $('saveBtn').textContent='保存项目和模型';$('cancelBtn').style.display='none';
+}
+function editP(id){$('psel').value=String(id);pickSaved();$('addCard').scrollIntoView({behavior:'smooth'})}
+function renderProjects(ps,ms){
+  $('projects').innerHTML=ps.length?ps.map(p=>{
+    const a=ms.filter(m=>m.provider_id===p.id);
+    const off=!p.enabled;
+    return `<div class="project"><div class="projHead"><b>${esc(p.name)}</b>${off?'<span class="pill warn">已禁用 / 失效</span>':'<span class="pill ok">启用中</span>'}</div>
+    <div class="muted">${esc(p.wire_api)} · ${esc(p.base_url)}</div>
+    <div>${a.length?a.map(m=>`<span class="modelTag">${esc(m.name)}<a href="javascript:void(0)" onclick="delM(${m.id})" title="删除此模型">×</a></span>`).join(''):'<span class="muted">未选择模型</span>'}</div>
+    <div class="actions"><button class="secondary small" onclick="editP(${p.id})">编辑</button><button class="secondary small" onclick="toggleP(${p.id},${off})">${off?'启用':'禁用'}</button><button class="danger small" onclick="delP(${p.id})">删除项目</button></div></div>`;
+  }).join(''):'<div class="muted">还没有代理项目。</div>';
+}
+// ===== 格式化与小工具 =====
+function providerName(id){const p=providersCache.find(x=>x.id===id);return p?p.name:('#'+id)}
+function fmtNum(n){n=Number(n)||0;return n.toLocaleString('zh-CN')}
+function fmtMs(n){n=Number(n)||0;return n<1000?n+' ms':(n/1000).toFixed(1)+' s'}
+function fmtBytes(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1024*1024)return (n/1024).toFixed(1)+' KB';return (n/1024/1024).toFixed(2)+' MB'}
+const PHASE_LABEL={connecting:'连接中',waiting:'等待上游响应',streaming:'流式传输中',completed:'已完成',error:'错误'};
+
+// ===== 统计 / 实时连接 / 请求日志渲染 =====
+function renderStats(s){
+  if(!s)return;
+  $('statSent').textContent=fmtNum(s.requests_total);
+  $('statRecv').textContent=fmtNum(s.responses_total);
+  $('statReject').textContent=fmtNum(s.rejected_total);
+  $('statTimeout').textContent=fmtNum(s.timeout_total);
+  $('statError').textContent=fmtNum(s.error_total);
+  $('statTokens').textContent=fmtNum(s.token_total);
+  $('statPrompt').textContent=fmtNum(s.token_prompt);
+  $('statCompletion').textContent=fmtNum(s.token_completion);
+  $('statBytesIn').textContent=fmtBytes(s.bytes_in);
+  $('statBytesOut').textContent=fmtBytes(s.bytes_out);
+  $('statConnTotal').textContent=fmtNum(s.connections_total);
+  $('statConnActive').textContent=fmtNum(s.connections_active);
+  $('statPeak').textContent=fmtNum(s.peak_concurrent);
+  $('statCleared').textContent=s.cleared_at?new Date(s.cleared_at).toLocaleString():'-';
+}
+
+function renderLive(list){
+  $('liveSummary').textContent=list.length?`当前 ${list.length} 个活跃连接，每秒自动刷新。`:'当前没有活跃连接，每秒自动刷新中。';
+  $('live').innerHTML=list.map(r=>{
+    const meta=[`用时 ${fmtMs(r.elapsed_ms)}`,`已收 ${fmtBytes(r.bytes_in)}`,`已发 ${fmtBytes(r.bytes_out)}`];
+    if(r.upstream_status)meta.push('上游状态 '+r.upstream_status);
+    if(r.error)meta.push('错误：'+esc(r.error));
+    const ph=r.phase;
+    const cls=ph==='error'?'err':ph==='completed'?'ok':'';
+    return `<div class="liveRow"><span class="pill ${cls}">${esc(PHASE_LABEL[ph]||ph||'-')}</span> <b>${esc(providerName(r.provider_id))}</b> · ${esc(r.model||'')}${r.stream?' · 流式':''}<div class="muted">${meta.join(' · ')}</div></div>`;
+  }).join('');
+}
+function renderHistory(logs){
+  $('history').innerHTML=logs.length?logs.map(l=>{
+    const t=l.time?new Date(l.time).toLocaleString():'';
+    const cls=Number(l.status)>=400?'err':'ok';
+    return `<div class="liveRow"><span class="pill ${cls}">${esc(l.status)}</span> <b>${esc(providerName(l.provider_id))}</b> · ${esc(l.model||'')}<div class="muted">${esc(t)} · 耗时 ${fmtMs(l.latency_ms)}${l.error?(' · '+esc(l.error)):''}</div></div>`;
+  }).join(''):'<div class="muted">暂无请求记录。</div>';
+}
+
+async function refreshStatus(){
+  try{
+    const s=await api('/api/status');
+    // 版本徽章不再写死在页面里，由服务端（源自 package.json）下发
+    if(s.version)$('verBadge').textContent='v'+s.version;
+    renderStats(s.stats);
+    renderLive(s.active_requests||[]);
+    renderHistory(s.recent_logs||[]);
+  }catch(e){
+    $('liveSummary').textContent='状态读取失败：'+e.message;
+  }
+}
+
+// ===== 管理操作 =====
+// 保存密钥是鉴权口径的唯一例外：优先用已保存的旧密钥鉴权（换密钥场景）；
+// 本地没有已保存密钥时回退用输入框里的值（首次设置 / 找回场景，相当于用输入的密钥自证）
+async function saveKey(){const k=$('gatewayKey').value;await api('/api/settings',{method:'POST',body:JSON.stringify({api_key:k})},GW_KEY||k);GW_KEY=k;localStorage.setItem('gw_key',k);show('连接密钥已保存','ok');load();refreshStatus()}
+
+// 尝试自动获取模型：调 /api/providers/test 用填写的项目信息直连上游拉模型列表；
+// 失败不影响保存，可改用手动模型
+async function discover(){
+  const b={name:$('pname').value.trim(),base_url:$('purl').value.trim(),api_key:$('pkey').value,wire_api:$('wire').value};
+  if(!b.name||!b.base_url)return show('请填写项目名称和 URL','err');
+  if(!b.api_key)return show(editingId?'自动获取需要重新输入一次项目密钥（已保存的密钥不回显）':'请填写项目密钥','err');
+  try{
+    show('正在尝试获取模型列表…','ok');
+    const r=await api('/api/providers/test',{method:'POST',body:JSON.stringify(b)});
+    discovered=r.models||[];
+    if(!discovered.length)return show('连接成功，但没有返回模型列表，请用「使用手动模型」。','err');
+    renderModels(discovered,true);
+    show(`连接成功，发现 ${discovered.length} 个模型。`,'ok');
+  }catch(e){show('自动获取失败：'+e.message+'。这不影响代理，请直接使用手动模型。','err')}
+}
+// 使用手动模型：按行解析文本框，去重后进入勾选列表（编辑时保留已存模型的显示名）
+function prepareManual(){
+  const a=$('manualModels').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  if(!a.length)return show('请至少填写一个模型名称','err');
+  discovered=[...new Map(a.map(id=>{const em=existingModels.find(x=>x.upstream_model===id);return[id,{id,name:em?em.name:id}]})).values()];
+  renderModels(discovered,true);
+  show(`已加入 ${discovered.length} 个手动模型。`,'ok');
+}
+function renderModels(a,checked){
+  $('models').innerHTML=a.map((m,i)=>`<label class="sel"><input type="checkbox" data-i="${i}" ${checked?'checked':''}><span><b>${esc(m.name)}</b><div class="muted">${esc(m.id)}</div></span></label>`).join('');
+  $('selectCard').style.display='block';
+}
+// 保存项目和模型：新建时先建项目再逐个建模型（public_id 形如 "项目ID:上游模型名"）；
+// 编辑时更新项目字段（密钥留空不传 = 保持不变），模型按上游模型名对比做增量增删
+async function saveProject(){
+  const s=[...document.querySelectorAll('#models input:checked')].map(x=>discovered[Number(x.dataset.i)]);
+  if(!s.length)return show('至少选择一个模型','err');
+  const b={name:$('pname').value.trim(),base_url:$('purl').value.trim(),api_key:$('pkey').value,wire_api:$('wire').value};
+  if(!b.name||!b.base_url)return show('请填写项目名称和 URL','err');
+  try{
+    if(editingId){
+      const upd={name:b.name,base_url:b.base_url,wire_api:b.wire_api};
+      if(b.api_key)upd.api_key=b.api_key;
+      await api('/api/providers/'+editingId,{method:'PUT',body:JSON.stringify(upd)});
+      const sel=new Map(s.map(m=>[m.id,m]));
+      for(const em of existingModels){
+        const nm=sel.get(em.upstream_model);
+        if(!nm||nm.name!==em.name)await api('/api/models/'+em.id,{method:'DELETE'});
+      }
+      for(const m of s){
+        const em=existingModels.find(x=>x.upstream_model===m.id);
+        if(em&&em.name===m.name)continue;
+        await api('/api/models',{method:'POST',body:JSON.stringify({provider_id:editingId,public_id:`${editingId}:${m.id}`,name:m.name,upstream_model:m.id})});
+      }
+      resetForm();await load();show('项目修改已保存。','ok');
+    }else{
+      if(!b.api_key)return show('请填写项目密钥','err');
+      const p=await api('/api/providers',{method:'POST',body:JSON.stringify(b)});
+      for(const m of s)await api('/api/models',{method:'POST',body:JSON.stringify({provider_id:p.id,public_id:`${p.id}:${m.id}`,name:m.name,upstream_model:m.id})});
+      resetForm();await load();show('项目和模型已保存。','ok');
+    }
+  }catch(e){show('保存失败：'+e.message,'err')}
+}
+
+async function toggleP(id,off){await api('/api/providers/'+id,{method:'PUT',body:JSON.stringify({enabled:off})});await load()}
+async function delM(id){if(confirm('删除这个模型？')){await api('/api/models/'+id,{method:'DELETE'});await load()}}
+async function delP(id){if(confirm('删除这个代理项目及其全部模型？')){await api('/api/providers/'+id,{method:'DELETE'});await load()}}
+async function resetStats(){if(confirm('确定清零全部统计数据？')){await api('/api/stats/reset',{method:'POST'});await refreshStatus()}}
+async function clearLogs(){if(confirm('确定清空最近请求日志？')){await api('/api/logs/clear',{method:'POST'});await refreshStatus()}}
+
+function show(t,c){$('status').textContent=t;$('status').className='status '+c;$('status').style.display='block'}
+// HTML 转义：所有插入页面的用户/上游数据必须过它，防 XSS
+function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// 启动：加载配置与项目列表，随后每秒轮询一次实时状态
+load();
+refreshStatus();
+setInterval(refreshStatus,1000);
+</script></body></html>
